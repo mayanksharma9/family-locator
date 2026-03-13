@@ -1,49 +1,85 @@
 # Family Locator
 
-A transparent, consent-based Flutter starter for family location sharing.
+A transparent, consent-based Flutter starter for simple family location sharing.
 
-## What this project is
+## Architecture
 
-This app is intentionally built as a **visible** family location app:
-- users must explicitly enable location sharing
-- the UI always shows whether sharing is on or off
-- users can stop sharing at any time
-- there is no hidden mode and no stealth install behavior
+This version uses:
+- a Flutter mobile app
+- a tiny Node.js WebSocket relay
+- no database
+- no location history persistence
 
-## Current MVP
+The relay keeps room membership and latest locations **in memory only**. If the relay restarts, the room state disappears.
 
-- Flutter app for iOS and Android
-- OpenStreetMap map view via `flutter_map`
-- current-device location permission flow via `geolocator`
-- visible sharing status controls
-- sample family member markers to demonstrate the UX
+## Current flow
 
-## What still needs real backend setup
+1. Run the relay server
+2. Open the app on each family member's phone
+3. Enter the same relay URL and family code
+4. Each person explicitly taps **Connect & share**
+5. Live locations are forwarded to everyone in that room
 
-To make this work like a real family-sharing product, you should connect it to a backend such as:
-- Supabase Realtime
-- Firebase Firestore + presence
-- your own API + WebSocket updates
+## Safety model
 
-### Suggested backend shape
+This app is intentionally visible and consent-based:
+- users must knowingly install it
+- users must manually join a family code
+- the app shows whether sharing is on or off
+- users can pause or disconnect at any time
+- there is no hidden mode or stealth tracking
 
-Table/collection ideas:
-- `families`
-- `family_members`
-- `location_updates`
-- `sharing_status`
+## Run the relay
 
-Each device should:
-1. authenticate as a real user
-2. join a family group by invite
-3. publish its latest location only when sharing is enabled
-4. subscribe to other opted-in family members' latest locations
+```bash
+cd server
+npm install
+npm start
+```
 
-## Run locally
+By default the relay listens on:
+
+```bash
+ws://localhost:8080
+```
+
+## Run the Flutter app
 
 ```bash
 flutter pub get
 flutter run
+```
+
+### Android emulator note
+Use this relay URL inside the app:
+
+```text
+ws://10.0.2.2:8080
+```
+
+### iPhone / real devices
+Use your computer's LAN IP, for example:
+
+```text
+ws://192.168.1.25:8080
+```
+
+Both phones and the relay server need to be reachable on the same network unless you deploy the relay publicly.
+
+## Tests
+
+Flutter:
+
+```bash
+flutter analyze
+flutter test
+```
+
+Relay:
+
+```bash
+cd server
+npm test
 ```
 
 ## Permissions included
@@ -59,6 +95,9 @@ flutter run
 - always-and-when-in-use usage description
 - background location mode
 
-## Important
+## Limitations
 
-Do not use this app for covert monitoring. Everyone being tracked should know, consent, and be able to turn sharing off.
+- background behavior depends on platform rules
+- GPS accuracy varies by device and environment
+- no database means no history and no offline sync
+- OpenStreetMap public tiles are okay for testing, but you should review tile-hosting policy before production use

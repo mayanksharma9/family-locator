@@ -1,7 +1,11 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -27,20 +31,48 @@ class FamilyLocatorApp extends StatelessWidget {
 
 class FamilyMember {
   const FamilyMember({
+    required this.id,
     required this.name,
-    required this.role,
     required this.location,
     required this.lastUpdated,
     required this.isSharing,
-    required this.isCurrentUser,
+    required this.accuracy,
+    this.isCurrentUser = false,
   });
 
+  final String id;
   final String name;
-  final String role;
-  final LatLng location;
-  final DateTime lastUpdated;
+  final LatLng? location;
+  final DateTime? lastUpdated;
   final bool isSharing;
+  final double? accuracy;
   final bool isCurrentUser;
+
+  FamilyMember copyWith({bool? isCurrentUser}) {
+    return FamilyMember(
+      id: id,
+      name: name,
+      location: location,
+      lastUpdated: lastUpdated,
+      isSharing: isSharing,
+      accuracy: accuracy,
+      isCurrentUser: isCurrentUser ?? this.isCurrentUser,
+    );
+  }
+
+  factory FamilyMember.fromJson(Map<String, dynamic> json, {required String currentUserId}) {
+    final lat = (json['lat'] as num?)?.toDouble();
+    final lng = (json['lng'] as num?)?.toDouble();
+    return FamilyMember(
+      id: json['id'] as String? ?? '',
+      name: json['name'] as String? ?? 'Unknown',
+      location: lat == null || lng == null ? null : LatLng(lat, lng),
+      lastUpdated: json['updatedAt'] == null ? null : DateTime.tryParse(json['updatedAt'] as String),
+      isSharing: json['isSharing'] as bool? ?? false,
+      accuracy: (json['accuracy'] as num?)?.toDouble(),
+      isCurrentUser: (json['id'] as String? ?? '') == currentUserId,
+    );
+  }
 }
 
 class FamilyLocatorHomePage extends StatefulWidget {
@@ -50,75 +82,122 @@ class FamilyLocatorHomePage extends StatefulWidget {
   State<FamilyLocatorHomePage> createState() => _FamilyLocatorHomePageState();
 }
 
+extension FirstOrNullExtension<T> on Iterable<T> {
+  T? get firstOrNull => isEmpty ? null : first;
+}
+
 class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
   final MapController _mapController = MapController();
+  final TextEditingController _nameController = TextEditingController(text: 'Leo');
+  final TextEditingController _roomController = TextEditingController(text: 'HOME123');
+  final TextEditingController _serverController = TextEditingController(text: 'ws://10.0.2.2:8080');
 
-  bool _sharingEnabled = true;
-  bool _consentAccepted = false;
-  bool _busy = false;
-  String? _status;
+  WebSocketChannel? _channel;
+  StreamSubscription? _socketSubscription;
+  StreamSubscription<Position>? _positionSubscription;
+
+  bool _sharingEnabled = false;
+  bool _isConnected = false;
+  bool _isJoining = false;
+  String? _status = 'Enter a visible family code and connect to your relay.';
+  String? _roomCode;
+  String? _memberId;
   Position? _currentPosition;
+  List<FamilyMember> _members = const [];
 
-  static final List<FamilyMember> _sampleMembers = [
-    FamilyMember(
-      name: 'Leo',
-      role: 'You',
-      location: const LatLng(37.7749, -122.4194),
-      lastUpdated: DateTime.now().subtract(const Duration(minutes: 2)),
-      isSharing: true,
-      isCurrentUser: true,
-    ),
-    FamilyMember(
-      name: 'Ava',
-      role: 'Family',
-      location: const LatLng(37.7849, -122.4094),
-      lastUpdated: DateTime.now().subtract(const Duration(minutes: 1)),
-      isSharing: true,
-      isCurrentUser: false,
-    ),
-    FamilyMember(
-      name: 'Noah',
-      role: 'Family',
-      location: const LatLng(37.7649, -122.4294),
-      lastUpdated: DateTime.now().subtract(const Duration(minutes: 4)),
-      isSharing: true,
-      isCurrentUser: false,
-    ),
-  ];
-
-  List<FamilyMember> get _members {
-    if (_currentPosition == null) {
-      return _sampleMembers;
-    }
-
-    return _sampleMembers.map((member) {
-      if (!member.isCurrentUser) {
-        return member;
-      }
-      return FamilyMember(
-        name: member.name,
-        role: member.role,
-        location: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
-        lastUpdated: DateTime.now(),
-        isSharing: _sharingEnabled,
-        isCurrentUser: true,
-      );
-    }).toList();
+  @override
+  void dispose() {
+    _socketSubscription?.cancel();
+    _positionSubscription?.cancel();
+    _channel?.sink.close();
+    _nameController.dispose();
+    _roomController.dispose();
+    _serverController.dispose();
+    super.dispose();
   }
 
-  Future<void> _enableSharing() async {
+  Future<void> _connectAndJoin() async {
+    FocusScope.of(context).unfocus();
+    final name = _nameController.text.trim();
+    final roomCode = _roomController.text.trim().toUpperCase();
+    final serverUrl = _serverController.text.trim();
+
+    if (name.isEmpty || roomCode.isEmpty || serverUrl.isEmpty) {
+      setState(() {
+        _status = 'Name, family code, and relay URL are all required.';
+      });
+      return;
+    }
+
     setState(() {
-      _busy = true;
-      _status = 'Requesting location permission…';
+      _isJoining = true;
+      _status = 'Checking permission and connecting…';
     });
 
+    final permissionReady = await _ensureLocationReady();
+    if (!permissionReady) {
+      setState(() {
+        _isJoining = false;
+      });
+      return;
+    }
+
+    await _disconnect(clearState: false);
+
+    try {
+      final channel = WebSocketChannel.connect(Uri.parse(serverUrl));
+      _channel = channel;
+      _socketSubscription = channel.stream.listen(
+        _handleSocketMessage,
+        onError: (Object error) {
+          setState(() {
+            _isConnected = false;
+            _status = 'Relay connection failed: $error';
+          });
+        },
+        onDone: () {
+          setState(() {
+            _isConnected = false;
+            _status = 'Relay disconnected.';
+          });
+        },
+      );
+
+      channel.sink.add(jsonEncode({
+        'type': 'join',
+        'name': name,
+        'roomCode': roomCode,
+        'isSharing': true,
+      }));
+
+      setState(() {
+        _sharingEnabled = true;
+        _roomCode = roomCode;
+        _isConnected = true;
+        _status = 'Connected. Waiting for room state…';
+      });
+
+      await _publishCurrentLocation();
+      _startLocationStream();
+    } catch (error) {
+      setState(() {
+        _isConnected = false;
+        _status = 'Could not connect to relay: $error';
+      });
+    } finally {
+      setState(() {
+        _isJoining = false;
+      });
+    }
+  }
+
+  Future<bool> _ensureLocationReady() async {
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
       setState(() {
-        _busy = false;
-        _status = 'Location services are off. Turn them on in system settings.';
+        _status = 'Location services are off. Turn them on first.';
       });
-      return;
+      return false;
     }
 
     var permission = await Geolocator.checkPermission();
@@ -126,111 +205,210 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
       permission = await Geolocator.requestPermission();
     }
 
-    if (permission == LocationPermission.denied ||
-        permission == LocationPermission.deniedForever) {
+    if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
       setState(() {
-        _busy = false;
-        _sharingEnabled = false;
         _status = 'Permission not granted. This app only shares location with consent.';
       });
-      return;
+      return false;
     }
 
-    final position = await Geolocator.getCurrentPosition();
-
-    setState(() {
-      _busy = false;
-      _consentAccepted = true;
-      _sharingEnabled = true;
-      _currentPosition = position;
-      _status = 'Location sharing is on. Replace the sample backend to sync with your family.';
-    });
-
-    _mapController.move(LatLng(position.latitude, position.longitude), 13);
+    return true;
   }
 
-  void _disableSharing() {
-    setState(() {
-      _sharingEnabled = false;
-      _status = 'Location sharing is off on this device.';
-    });
-  }
-
-  Future<void> _refreshLocation() async {
-    if (!_sharingEnabled) {
-      setState(() {
-        _status = 'Turn sharing back on before refreshing location.';
-      });
-      return;
-    }
-
-    setState(() {
-      _busy = true;
-      _status = 'Refreshing your location…';
-    });
-
+  Future<void> _publishCurrentLocation() async {
     try {
-      final position = await Geolocator.getCurrentPosition();
-      setState(() {
-        _busy = false;
-        _currentPosition = position;
-        _status = 'Location refreshed just now.';
-      });
-      _mapController.move(LatLng(position.latitude, position.longitude), 13);
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.best),
+      );
+      _currentPosition = position;
+      _sendLocation(position);
+      _moveMapTo(position.latitude, position.longitude);
     } catch (_) {
       setState(() {
-        _busy = false;
-        _status = 'Could not refresh location right now.';
+        _status = 'Connected, but the first location fix is still pending.';
       });
     }
+  }
+
+  void _startLocationStream() {
+    _positionSubscription?.cancel();
+    _positionSubscription = Geolocator.getPositionStream(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.best,
+        distanceFilter: 10,
+      ),
+    ).listen((position) {
+      _currentPosition = position;
+      if (_sharingEnabled) {
+        _sendLocation(position);
+      }
+      _moveMapTo(position.latitude, position.longitude);
+    });
+  }
+
+  void _sendLocation(Position position) {
+    _channel?.sink.add(jsonEncode({
+      'type': 'location',
+      'lat': position.latitude,
+      'lng': position.longitude,
+      'accuracy': position.accuracy,
+      'isSharing': _sharingEnabled,
+    }));
+    setState(() {
+      _status = 'Sharing live location to family code ${_roomCode ?? '-'}.';
+    });
+  }
+
+  void _handleSocketMessage(dynamic raw) {
+    final message = jsonDecode(raw as String) as Map<String, dynamic>;
+    switch (message['type']) {
+      case 'welcome':
+        setState(() {
+          _status = 'Relay connected. Joining room…';
+        });
+        break;
+      case 'joined':
+        setState(() {
+          _memberId = message['memberId'] as String?;
+          _roomCode = message['roomCode'] as String?;
+          _status = 'Joined family code ${_roomCode ?? '-'}.';
+        });
+        break;
+      case 'room_state':
+        final currentId = _memberId ?? '';
+        final members = (message['members'] as List<dynamic>)
+            .cast<Map<String, dynamic>>()
+            .map((member) => FamilyMember.fromJson(member, currentUserId: currentId))
+            .toList();
+        setState(() {
+          _members = members;
+          _status = 'Live room synced with ${members.length} member(s).';
+        });
+        final selected = members.where((member) => member.isCurrentUser && member.location != null).firstOrNull ??
+            members.where((member) => member.location != null).firstOrNull;
+        if (selected != null && selected.location != null) {
+          _moveMapTo(selected.location!.latitude, selected.location!.longitude);
+        }
+        break;
+      case 'pong':
+        break;
+      case 'error':
+        setState(() {
+          _status = 'Relay error: ${message['message']}';
+        });
+        break;
+    }
+  }
+
+  Future<void> _toggleSharing(bool enabled) async {
+    setState(() {
+      _sharingEnabled = enabled;
+    });
+    _channel?.sink.add(jsonEncode({'type': 'sharing', 'isSharing': enabled}));
+    if (enabled) {
+      await _publishCurrentLocation();
+    } else {
+      setState(() {
+        _status = 'Sharing paused on this device.';
+      });
+    }
+  }
+
+  Future<void> _disconnect({bool clearState = true}) async {
+    await _socketSubscription?.cancel();
+    await _positionSubscription?.cancel();
+    await _channel?.sink.close();
+    _socketSubscription = null;
+    _positionSubscription = null;
+    _channel = null;
+    setState(() {
+      _isConnected = false;
+      _sharingEnabled = false;
+      if (clearState) {
+        _members = const [];
+        _memberId = null;
+        _roomCode = null;
+        _status = 'Disconnected from relay.';
+      }
+    });
+  }
+
+  void _moveMapTo(double lat, double lng) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _mapController.move(LatLng(lat, lng), 13);
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final members = _members;
-    final currentUser = members.firstWhere((member) => member.isCurrentUser);
+    final visibleMembers = _members.where((member) => member.isSharing && member.location != null).toList();
+    final initialCenter = visibleMembers.firstOrNull?.location ??
+        (_currentPosition == null ? const LatLng(37.7749, -122.4194) : LatLng(_currentPosition!.latitude, _currentPosition!.longitude));
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Family Locator'),
         actions: [
-          IconButton(
-            onPressed: _busy ? null : _refreshLocation,
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Refresh location',
-          ),
+          if (_isConnected)
+            IconButton(
+              onPressed: () => _disconnect(),
+              icon: const Icon(Icons.link_off),
+              tooltip: 'Disconnect',
+            ),
         ],
       ),
       body: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+            padding: const EdgeInsets.all(16),
             child: Card(
               child: Padding(
                 padding: const EdgeInsets.all(16),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    Text(
+                      'Visible, consent-based family sharing',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _serverController,
+                      decoration: const InputDecoration(
+                        labelText: 'Relay URL',
+                        hintText: 'ws://10.0.2.2:8080',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
                     Row(
                       children: [
-                        Icon(
-                          _sharingEnabled ? Icons.location_on : Icons.location_off,
-                          color: _sharingEnabled ? Colors.green : Colors.red,
+                        Expanded(
+                          child: TextField(
+                            controller: _nameController,
+                            decoration: const InputDecoration(
+                              labelText: 'Your name',
+                              border: OutlineInputBorder(),
+                            ),
+                          ),
                         ),
                         const SizedBox(width: 12),
                         Expanded(
-                          child: Text(
-                            _sharingEnabled
-                                ? 'Sharing is visible and enabled on this device.'
-                                : 'Sharing is disabled on this device.',
-                            style: Theme.of(context).textTheme.titleMedium,
+                          child: TextField(
+                            controller: _roomController,
+                            textCapitalization: TextCapitalization.characters,
+                            decoration: const InputDecoration(
+                              labelText: 'Family code',
+                              border: OutlineInputBorder(),
+                            ),
                           ),
                         ),
                       ],
                     ),
                     const SizedBox(height: 12),
                     Text(
-                      'This app is designed for explicit family consent. Do not install or use it secretly.',
+                      'Everyone must knowingly install the app and join the same family code. This project does not support hidden tracking.',
                       style: Theme.of(context).textTheme.bodyMedium,
                     ),
                     const SizedBox(height: 12),
@@ -239,21 +417,29 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
                       runSpacing: 12,
                       children: [
                         FilledButton.icon(
-                          onPressed: _busy ? null : _enableSharing,
-                          icon: const Icon(Icons.verified_user),
-                          label: Text(_consentAccepted ? 'Re-check permissions' : 'Enable sharing'),
+                          onPressed: _isJoining ? null : _connectAndJoin,
+                          icon: const Icon(Icons.link),
+                          label: Text(_isConnected ? 'Reconnect' : 'Connect & share'),
                         ),
-                        OutlinedButton.icon(
-                          onPressed: _busy ? null : _disableSharing,
-                          icon: const Icon(Icons.pause_circle_outline),
-                          label: const Text('Stop sharing'),
-                        ),
+                        if (_isConnected)
+                          OutlinedButton.icon(
+                            onPressed: () => _toggleSharing(!_sharingEnabled),
+                            icon: Icon(_sharingEnabled ? Icons.pause_circle : Icons.play_circle),
+                            label: Text(_sharingEnabled ? 'Pause sharing' : 'Resume sharing'),
+                          ),
                       ],
                     ),
-                    if (_status != null) ...[
-                      const SizedBox(height: 12),
-                      Text(_status!),
-                    ],
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Icon(
+                          _isConnected ? Icons.cloud_done : Icons.cloud_off,
+                          color: _isConnected ? Colors.green : Colors.orange,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(child: Text(_status ?? '')),
+                      ],
+                    ),
                   ],
                 ),
               ),
@@ -267,55 +453,50 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
                 borderRadius: BorderRadius.circular(20),
                 child: FlutterMap(
                   mapController: _mapController,
-                  options: MapOptions(
-                    initialCenter: currentUser.location,
-                    initialZoom: 12,
-                  ),
+                  options: MapOptions(initialCenter: initialCenter, initialZoom: 12),
                   children: [
                     TileLayer(
                       urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                       userAgentPackageName: 'com.example.family_locator',
                     ),
                     MarkerLayer(
-                      markers: members
-                          .where((member) => member.isSharing)
-                          .map(
-                            (member) => Marker(
-                              point: member.location,
-                              width: 120,
-                              height: 60,
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                    decoration: BoxDecoration(
-                                      color: member.isCurrentUser
-                                          ? Theme.of(context).colorScheme.primary
-                                          : Theme.of(context).colorScheme.secondaryContainer,
-                                      borderRadius: BorderRadius.circular(999),
-                                    ),
-                                    child: Text(
-                                      member.name,
-                                      style: TextStyle(
-                                        color: member.isCurrentUser
-                                            ? Theme.of(context).colorScheme.onPrimary
-                                            : Theme.of(context).colorScheme.onSecondaryContainer,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
+                      markers: visibleMembers.map((member) {
+                        final location = member.location!;
+                        return Marker(
+                          point: location,
+                          width: 120,
+                          height: 60,
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: member.isCurrentUser
+                                      ? Theme.of(context).colorScheme.primary
+                                      : Theme.of(context).colorScheme.secondaryContainer,
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: Text(
+                                  member.name,
+                                  style: TextStyle(
+                                    color: member.isCurrentUser
+                                        ? Theme.of(context).colorScheme.onPrimary
+                                        : Theme.of(context).colorScheme.onSecondaryContainer,
+                                    fontWeight: FontWeight.w600,
                                   ),
-                                  const SizedBox(height: 4),
-                                  Icon(
-                                    Icons.location_pin,
-                                    size: 28,
-                                    color: member.isCurrentUser ? Colors.redAccent : Colors.blueAccent,
-                                  ),
-                                ],
+                                ),
                               ),
-                            ),
-                          )
-                          .toList(),
+                              const SizedBox(height: 4),
+                              Icon(
+                                Icons.location_pin,
+                                size: 28,
+                                color: member.isCurrentUser ? Colors.redAccent : Colors.blueAccent,
+                              ),
+                            ],
+                          ),
+                        );
+                      }).toList(),
                     ),
                   ],
                 ),
@@ -326,27 +507,24 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
             flex: 2,
             child: ListView.separated(
               padding: const EdgeInsets.all(16),
+              itemCount: _members.length,
               itemBuilder: (context, index) {
-                final member = members[index];
+                final member = _members[index];
                 return ListTile(
                   contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                   tileColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-                  leading: CircleAvatar(
-                    child: Text(member.name.characters.first),
-                  ),
+                  leading: CircleAvatar(child: Text(member.name.isEmpty ? '?' : member.name.characters.first)),
                   title: Text(member.name),
                   subtitle: Text(
-                    '${member.role} • ${member.isSharing ? 'Sharing' : 'Paused'} • updated ${_formatAgo(member.lastUpdated)}',
+                    '${member.isCurrentUser ? 'You' : 'Family'} • ${member.isSharing ? 'Sharing' : 'Paused'}${member.lastUpdated == null ? '' : ' • ${_formatAgo(member.lastUpdated!)}'}',
                   ),
-                  trailing: Icon(
-                    member.isSharing ? Icons.check_circle : Icons.pause_circle,
-                    color: member.isSharing ? Colors.green : Colors.orange,
-                  ),
+                  trailing: member.accuracy == null
+                      ? null
+                      : Text('±${member.accuracy!.round()}m', style: Theme.of(context).textTheme.bodySmall),
                 );
               },
-              separatorBuilder: (_, index) => const SizedBox(height: 8),
-              itemCount: members.length,
+              separatorBuilder: (context, index) => const SizedBox(height: 8),
             ),
           ),
         ],
@@ -356,8 +534,11 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
 
   String _formatAgo(DateTime timestamp) {
     final delta = DateTime.now().difference(timestamp);
-    if (delta.inMinutes < 1) {
+    if (delta.inSeconds < 10) {
       return 'just now';
+    }
+    if (delta.inMinutes < 1) {
+      return '${delta.inSeconds}s ago';
     }
     if (delta.inHours < 1) {
       return '${delta.inMinutes}m ago';
