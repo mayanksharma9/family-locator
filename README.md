@@ -53,6 +53,17 @@ flutter pub get
 flutter run
 ```
 
+## Install on iPhone
+
+See: `ios/INSTALL.md`
+
+Short version:
+- open `ios/Runner.xcworkspace` in Xcode on a Mac
+- set a unique bundle identifier
+- choose your Apple signing team
+- run the app on your connected iPhone
+- use a LAN relay URL like `ws://192.168.1.25:8080`
+
 ### Android emulator note
 Use this relay URL inside the app:
 
