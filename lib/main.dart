@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -195,9 +196,7 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
   }
 
   void _handleDisconnect(String message) {
-    if (!mounted) {
-      return;
-    }
+    if (!mounted) return;
     setState(() {
       _isConnected = false;
       _status = message;
@@ -246,21 +245,53 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
       return false;
     }
 
+    if (Platform.isAndroid || Platform.isIOS) {
+      if (permission == LocationPermission.whileInUse) {
+        setState(() {
+          _status = 'Connected with foreground location access. For better background updates, enable Always access in system settings if you want that behavior.';
+        });
+      }
+    }
+
     return true;
+  }
+
+  LocationSettings _locationSettings() {
+    if (Platform.isAndroid) {
+      return AndroidSettings(
+        accuracy: LocationAccuracy.bestForNavigation,
+        distanceFilter: 5,
+        intervalDuration: const Duration(seconds: 4),
+        foregroundNotificationConfig: const ForegroundNotificationConfig(
+          notificationTitle: 'Family Locator is sharing location',
+          notificationText: 'Your live location is being shared with your family.',
+          enableWakeLock: true,
+        ),
+      );
+    }
+    if (Platform.isIOS) {
+      return AppleSettings(
+        accuracy: LocationAccuracy.bestForNavigation,
+        distanceFilter: 5,
+        pauseLocationUpdatesAutomatically: false,
+        allowBackgroundLocationUpdates: true,
+        showBackgroundLocationIndicator: true,
+      );
+    }
+    return const LocationSettings(
+      accuracy: LocationAccuracy.best,
+      distanceFilter: 5,
+    );
   }
 
   Future<void> _publishCurrentLocation() async {
     try {
-      final position = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(accuracy: LocationAccuracy.best),
-      );
+      final position = await Geolocator.getCurrentPosition(locationSettings: _locationSettings());
       _currentPosition = position;
       _sendLocation(position);
       _moveMapTo(position.latitude, position.longitude);
     } catch (_) {
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
       setState(() {
         _status = 'Connected, but the first location fix is still pending.';
       });
@@ -269,12 +300,7 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
 
   void _startLocationStream() {
     _positionSubscription?.cancel();
-    _positionSubscription = Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.best,
-        distanceFilter: 5,
-      ),
-    ).listen((position) {
+    _positionSubscription = Geolocator.getPositionStream(locationSettings: _locationSettings()).listen((position) {
       _currentPosition = position;
       if (_sharingEnabled && _isConnected) {
         _sendLocation(position);
@@ -300,11 +326,9 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
       'accuracy': position.accuracy,
       'isSharing': _sharingEnabled,
     }));
-    if (!mounted) {
-      return;
-    }
+    if (!mounted) return;
     setState(() {
-      _status = 'Sharing live location to family code ${_roomCode ?? '-'}.';
+      _status = 'Sharing live location to family code ${_roomCode ?? '-'}. Last fix ±${position.accuracy.round()}m.';
     });
   }
 
@@ -362,6 +386,29 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
     }
   }
 
+  Future<void> _manualRefresh() async {
+    setState(() {
+      _status = 'Refreshing location now…';
+    });
+    await _publishCurrentLocation();
+  }
+
+  void _recenterToBestMember() {
+    final selected = _members.where((member) => member.isCurrentUser && member.location != null).firstOrNull ??
+        _members.where((member) => member.location != null).firstOrNull;
+    final location = selected?.location;
+    if (location != null) {
+      _moveMapTo(location.latitude, location.longitude);
+      setState(() {
+        _status = 'Map recentered to ${selected!.name}.';
+      });
+    }
+  }
+
+  Future<void> _openLocationSettings() async {
+    await Geolocator.openAppSettings();
+  }
+
   Future<void> _disconnect({bool clearState = true, bool allowReconnect = false}) async {
     _autoReconnectEnabled = allowReconnect;
     _pingTimer?.cancel();
@@ -372,9 +419,7 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
     _socketSubscription = null;
     _positionSubscription = null;
     _channel = null;
-    if (!mounted) {
-      return;
-    }
+    if (!mounted) return;
     setState(() {
       _isConnected = false;
       _sharingEnabled = false;
@@ -389,9 +434,7 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
 
   void _moveMapTo(double lat, double lng) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
       _mapController.move(LatLng(lat, lng), 15);
     });
   }
@@ -408,6 +451,16 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
       appBar: AppBar(
         title: const Text('Family Locator'),
         actions: [
+          IconButton(
+            onPressed: _manualRefresh,
+            icon: const Icon(Icons.my_location),
+            tooltip: 'Refresh my location',
+          ),
+          IconButton(
+            onPressed: _recenterToBestMember,
+            icon: const Icon(Icons.center_focus_strong),
+            tooltip: 'Recenter map',
+          ),
           if (_isConnected)
             IconButton(
               onPressed: () => _disconnect(),
@@ -485,6 +538,11 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
                             icon: Icon(_sharingEnabled ? Icons.pause_circle : Icons.play_circle),
                             label: Text(_sharingEnabled ? 'Pause sharing' : 'Resume sharing'),
                           ),
+                        OutlinedButton.icon(
+                          onPressed: _openLocationSettings,
+                          icon: const Icon(Icons.settings),
+                          label: const Text('Open app settings'),
+                        ),
                       ],
                     ),
                     const SizedBox(height: 12),

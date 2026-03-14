@@ -20,6 +20,7 @@ The relay keeps room membership and latest locations **in memory only**. If the 
 4. Each person explicitly taps **Connect & share**
 5. Live locations are forwarded to everyone in that room
 6. If the relay drops, the app automatically retries with backoff
+7. Users can refresh location, recenter the map, pause sharing, or open settings
 
 ## Safety model
 
@@ -34,8 +35,7 @@ This app is intentionally visible and consent-based:
 
 ```bash
 cd server
-npm install
-npm start
+./run.sh
 ```
 
 By default the relay listens on:
@@ -43,6 +43,8 @@ By default the relay listens on:
 ```bash
 ws://localhost:8080
 ```
+
+More deploy notes: `server/deploy.md`
 
 ## Run the Flutter app
 
@@ -67,19 +69,30 @@ ws://192.168.1.25:8080
 
 Both phones and the relay server need to be reachable on the same network unless you deploy the relay publicly.
 
+## Background location notes
+
+This build now uses platform-specific location settings aimed at better active/background behavior:
+- Android foreground notification config for active sharing
+- iOS background location update flags
+- tighter GPS update intervals and distance filters
+
+But the real constraint is still the OS. Background delivery can be delayed or reduced by:
+- battery optimization
+- app suspension
+- permission level (`While Using` vs `Always`)
+- poor GPS or network conditions
+
+So this is more robust, but still not magic.
+
 ## Performance notes
 
 This build is tuned for a simple low-latency MVP:
-- location stream uses `LocationAccuracy.best`
+- location stream uses high-accuracy settings
 - location updates send after small movement changes
 - WebSocket ping keeps the relay session warm
 - reconnect retries use capped backoff
 
-Still, no honest mobile app can promise literally zero lag. Real-world accuracy and latency depend on:
-- GPS signal quality
-- battery saver / background restrictions
-- iOS and Android location policies
-- Wi-Fi or cellular network quality
+Still, no honest mobile app can promise literally zero lag.
 
 ## Tests
 
@@ -115,4 +128,5 @@ npm test
 - background behavior depends on platform rules
 - GPS accuracy varies by device and environment
 - no database means no history and no offline sync
+- room code alone is weak auth for internet exposure
 - OpenStreetMap public tiles are okay for testing, but you should review tile-hosting policy before production use
