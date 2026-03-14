@@ -103,7 +103,7 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
   final MapController _mapController = MapController();
   final TextEditingController _nameController = TextEditingController(text: 'Leo');
   final TextEditingController _roomController = TextEditingController(text: 'HOME123');
-  final TextEditingController _serverController = TextEditingController(text: 'ws://192.168.4.64:8080');
+  final TextEditingController _serverController = TextEditingController(text: 'ws://192.168.4.64:8081');
 
   WebSocketChannel? _channel;
   StreamSubscription? _socketSubscription;
@@ -561,7 +561,7 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
                     controller: _serverController,
                     decoration: const InputDecoration(
                       labelText: 'Relay URL',
-                      hintText: 'ws://192.168.4.64:8080',
+                      hintText: 'ws://192.168.4.64:8081',
                       border: OutlineInputBorder(),
                     ),
                   ),
