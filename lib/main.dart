@@ -123,6 +123,7 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
   geo.Position? _currentPosition;
   List<FamilyMember> _members = const [];
   _ConnectionIntent? _lastIntent;
+  String? _selectedMemberId;
 
   @override
   void initState() {
@@ -515,6 +516,16 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
     });
   }
 
+  void _selectMember(FamilyMember member) {
+    if (member.location == null) return;
+    
+    setState(() {
+      _selectedMemberId = member.id;
+    });
+    
+    _moveMapTo(member.location!.latitude, member.location!.longitude);
+  }
+
   Future<void> _inviteFamilyMember() async {
     final code = _roomCode ?? _roomController.text.trim().toUpperCase();
     if (code.isEmpty) return;
@@ -695,10 +706,19 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
                         itemCount: _members.length,
                         itemBuilder: (context, index) {
                           final member = _members[index];
+                          final isSelected = member.id == _selectedMemberId;
                           return ListTile(
+                            onTap: () => _selectMember(member),
                             contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                            tileColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                              side: isSelected 
+                                ? BorderSide(color: Theme.of(context).colorScheme.primary, width: 2)
+                                : BorderSide.none,
+                            ),
+                            tileColor: isSelected
+                              ? Theme.of(context).colorScheme.primaryContainer
+                              : Theme.of(context).colorScheme.surfaceContainerHighest,
                             leading: CircleAvatar(child: Text(member.name.isEmpty ? '?' : member.name.characters.first)),
                             title: Text(member.name),
                             subtitle: Text(
@@ -772,38 +792,50 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
               MarkerLayer(
                 markers: visibleMembers.map((member) {
                   final location = member.location!;
+                  final isSelected = member.id == _selectedMemberId;
                   return Marker(
                     point: location,
                     width: 120,
-                    height: 60,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: member.isCurrentUser
-                                ? Theme.of(context).colorScheme.primary
-                                : Theme.of(context).colorScheme.secondaryContainer,
-                            borderRadius: BorderRadius.circular(999),
-                          ),
-                          child: Text(
-                            member.name,
-                            style: TextStyle(
-                              color: member.isCurrentUser
-                                  ? Theme.of(context).colorScheme.onPrimary
-                                  : Theme.of(context).colorScheme.onSecondaryContainer,
-                              fontWeight: FontWeight.w600,
+                    height: 80,
+                    child: GestureDetector(
+                      onTap: () => _selectMember(member),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          AnimatedContainer(
+                            duration: const Duration(milliseconds: 200),
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: isSelected
+                                  ? Colors.orangeAccent
+                                  : (member.isCurrentUser
+                                      ? Theme.of(context).colorScheme.primary
+                                      : Theme.of(context).colorScheme.secondaryContainer),
+                              borderRadius: BorderRadius.circular(999),
+                              boxShadow: isSelected
+                                  ? [BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 2))]
+                                  : null,
+                            ),
+                            child: Text(
+                              member.name,
+                              style: TextStyle(
+                                color: (isSelected || member.isCurrentUser)
+                                    ? Theme.of(context).colorScheme.onPrimary
+                                    : Theme.of(context).colorScheme.onSecondaryContainer,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
                           ),
-                        ),
-                        const SizedBox(height: 4),
-                        Icon(
-                          Icons.location_pin,
-                          size: 28,
-                          color: member.isCurrentUser ? Colors.redAccent : Colors.blueAccent,
-                        ),
-                      ],
+                          const SizedBox(height: 4),
+                          Icon(
+                            Icons.location_pin,
+                            size: isSelected ? 36 : 28,
+                            color: isSelected 
+                              ? Colors.orangeAccent 
+                              : (member.isCurrentUser ? Colors.redAccent : Colors.blueAccent),
+                          ),
+                        ],
+                      ),
                     ),
                   );
                 }).toList(),
