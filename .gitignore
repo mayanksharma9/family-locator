@@ -31,6 +31,7 @@ migrate_working_dir/
 .pub-cache/
 .pub/
 /build/
+server/node_modules/
 /coverage/
 
 # Symbolication related
@@ -45,4 +46,3 @@ app.*.map.json
 /android/app/release
 
 server/node_modules/
-server/package-lock.json

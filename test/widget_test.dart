@@ -10,5 +10,6 @@ void main() {
     expect(find.text('Relay URL'), findsOneWidget);
     expect(find.text('Family code'), findsOneWidget);
     expect(find.text('Connect & share'), findsOneWidget);
+    expect(find.text('Visible, consent-based family sharing'), findsOneWidget);
   });
 }

@@ -48,18 +48,6 @@ class FamilyMember {
   final double? accuracy;
   final bool isCurrentUser;
 
-  FamilyMember copyWith({bool? isCurrentUser}) {
-    return FamilyMember(
-      id: id,
-      name: name,
-      location: location,
-      lastUpdated: lastUpdated,
-      isSharing: isSharing,
-      accuracy: accuracy,
-      isCurrentUser: isCurrentUser ?? this.isCurrentUser,
-    );
-  }
-
   factory FamilyMember.fromJson(Map<String, dynamic> json, {required String currentUserId}) {
     final lat = (json['lat'] as num?)?.toDouble();
     final lng = (json['lng'] as num?)?.toDouble();
@@ -75,15 +63,27 @@ class FamilyMember {
   }
 }
 
+extension FirstOrNullExtension<T> on Iterable<T> {
+  T? get firstOrNull => isEmpty ? null : first;
+}
+
+class _ConnectionIntent {
+  const _ConnectionIntent({
+    required this.name,
+    required this.roomCode,
+    required this.serverUrl,
+  });
+
+  final String name;
+  final String roomCode;
+  final String serverUrl;
+}
+
 class FamilyLocatorHomePage extends StatefulWidget {
   const FamilyLocatorHomePage({super.key});
 
   @override
   State<FamilyLocatorHomePage> createState() => _FamilyLocatorHomePageState();
-}
-
-extension FirstOrNullExtension<T> on Iterable<T> {
-  T? get firstOrNull => isEmpty ? null : first;
 }
 
 class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
@@ -95,18 +95,26 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
   WebSocketChannel? _channel;
   StreamSubscription? _socketSubscription;
   StreamSubscription<Position>? _positionSubscription;
+  Timer? _pingTimer;
+  Timer? _reconnectTimer;
 
   bool _sharingEnabled = false;
   bool _isConnected = false;
   bool _isJoining = false;
+  bool _autoReconnectEnabled = false;
+  int _reconnectAttempts = 0;
+
   String? _status = 'Enter a visible family code and connect to your relay.';
   String? _roomCode;
   String? _memberId;
   Position? _currentPosition;
   List<FamilyMember> _members = const [];
+  _ConnectionIntent? _lastIntent;
 
   @override
   void dispose() {
+    _pingTimer?.cancel();
+    _reconnectTimer?.cancel();
     _socketSubscription?.cancel();
     _positionSubscription?.cancel();
     _channel?.sink.close();
@@ -116,7 +124,7 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
     super.dispose();
   }
 
-  Future<void> _connectAndJoin() async {
+  Future<void> _connectAndJoin({bool isReconnect = false}) async {
     FocusScope.of(context).unfocus();
     final name = _nameController.text.trim();
     final roomCode = _roomController.text.trim().toUpperCase();
@@ -129,9 +137,13 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
       return;
     }
 
+    _lastIntent = _ConnectionIntent(name: name, roomCode: roomCode, serverUrl: serverUrl);
+    _autoReconnectEnabled = true;
+    _reconnectTimer?.cancel();
+
     setState(() {
       _isJoining = true;
-      _status = 'Checking permission and connecting…';
+      _status = isReconnect ? 'Reconnecting to relay…' : 'Checking permission and connecting…';
     });
 
     final permissionReady = await _ensureLocationReady();
@@ -142,32 +154,22 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
       return;
     }
 
-    await _disconnect(clearState: false);
+    await _disconnect(clearState: false, allowReconnect: false);
 
     try {
       final channel = WebSocketChannel.connect(Uri.parse(serverUrl));
       _channel = channel;
       _socketSubscription = channel.stream.listen(
         _handleSocketMessage,
-        onError: (Object error) {
-          setState(() {
-            _isConnected = false;
-            _status = 'Relay connection failed: $error';
-          });
-        },
-        onDone: () {
-          setState(() {
-            _isConnected = false;
-            _status = 'Relay disconnected.';
-          });
-        },
+        onError: (Object error) => _handleDisconnect('Relay connection failed: $error'),
+        onDone: () => _handleDisconnect('Relay disconnected.'),
       );
 
       channel.sink.add(jsonEncode({
         'type': 'join',
         'name': name,
         'roomCode': roomCode,
-        'isSharing': true,
+        'isSharing': _sharingEnabled || !isReconnect,
       }));
 
       setState(() {
@@ -175,20 +177,52 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
         _roomCode = roomCode;
         _isConnected = true;
         _status = 'Connected. Waiting for room state…';
+        _reconnectAttempts = 0;
       });
 
+      _startPingLoop();
       await _publishCurrentLocation();
       _startLocationStream();
     } catch (error) {
-      setState(() {
-        _isConnected = false;
-        _status = 'Could not connect to relay: $error';
-      });
+      _handleDisconnect('Could not connect to relay: $error');
     } finally {
-      setState(() {
-        _isJoining = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isJoining = false;
+        });
+      }
     }
+  }
+
+  void _handleDisconnect(String message) {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _isConnected = false;
+      _status = message;
+    });
+    _pingTimer?.cancel();
+    if (_autoReconnectEnabled) {
+      _scheduleReconnect();
+    }
+  }
+
+  void _scheduleReconnect() {
+    if (_lastIntent == null || _isConnected || _isJoining) {
+      return;
+    }
+    _reconnectTimer?.cancel();
+    final delaySeconds = (_reconnectAttempts < 5 ? _reconnectAttempts + 1 : 5) * 2;
+    _reconnectAttempts += 1;
+    setState(() {
+      _status = 'Relay offline. Retrying in ${delaySeconds}s…';
+    });
+    _reconnectTimer = Timer(Duration(seconds: delaySeconds), () {
+      if (mounted && _autoReconnectEnabled) {
+        _connectAndJoin(isReconnect: true);
+      }
+    });
   }
 
   Future<bool> _ensureLocationReady() async {
@@ -224,6 +258,9 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
       _sendLocation(position);
       _moveMapTo(position.latitude, position.longitude);
     } catch (_) {
+      if (!mounted) {
+        return;
+      }
       setState(() {
         _status = 'Connected, but the first location fix is still pending.';
       });
@@ -235,14 +272,23 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
     _positionSubscription = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.best,
-        distanceFilter: 10,
+        distanceFilter: 5,
       ),
     ).listen((position) {
       _currentPosition = position;
-      if (_sharingEnabled) {
+      if (_sharingEnabled && _isConnected) {
         _sendLocation(position);
       }
       _moveMapTo(position.latitude, position.longitude);
+    });
+  }
+
+  void _startPingLoop() {
+    _pingTimer?.cancel();
+    _pingTimer = Timer.periodic(const Duration(seconds: 12), (_) {
+      if (_isConnected) {
+        _channel?.sink.add(jsonEncode({'type': 'ping'}));
+      }
     });
   }
 
@@ -254,6 +300,9 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
       'accuracy': position.accuracy,
       'isSharing': _sharingEnabled,
     }));
+    if (!mounted) {
+      return;
+    }
     setState(() {
       _status = 'Sharing live location to family code ${_roomCode ?? '-'}.';
     });
@@ -277,8 +326,7 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
       case 'room_state':
         final currentId = _memberId ?? '';
         final members = (message['members'] as List<dynamic>)
-            .cast<Map<String, dynamic>>()
-            .map((member) => FamilyMember.fromJson(member, currentUserId: currentId))
+            .map((entry) => FamilyMember.fromJson(Map<String, dynamic>.from(entry as Map), currentUserId: currentId))
             .toList();
         setState(() {
           _members = members;
@@ -286,8 +334,8 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
         });
         final selected = members.where((member) => member.isCurrentUser && member.location != null).firstOrNull ??
             members.where((member) => member.location != null).firstOrNull;
-        if (selected != null && selected.location != null) {
-          _moveMapTo(selected.location!.latitude, selected.location!.longitude);
+        if (selected?.location case final location?) {
+          _moveMapTo(location.latitude, location.longitude);
         }
         break;
       case 'pong':
@@ -314,13 +362,19 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
     }
   }
 
-  Future<void> _disconnect({bool clearState = true}) async {
+  Future<void> _disconnect({bool clearState = true, bool allowReconnect = false}) async {
+    _autoReconnectEnabled = allowReconnect;
+    _pingTimer?.cancel();
+    _reconnectTimer?.cancel();
     await _socketSubscription?.cancel();
     await _positionSubscription?.cancel();
     await _channel?.sink.close();
     _socketSubscription = null;
     _positionSubscription = null;
     _channel = null;
+    if (!mounted) {
+      return;
+    }
     setState(() {
       _isConnected = false;
       _sharingEnabled = false;
@@ -335,8 +389,10 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
 
   void _moveMapTo(double lat, double lng) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      _mapController.move(LatLng(lat, lng), 13);
+      if (!mounted) {
+        return;
+      }
+      _mapController.move(LatLng(lat, lng), 15);
     });
   }
 
@@ -344,7 +400,9 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
   Widget build(BuildContext context) {
     final visibleMembers = _members.where((member) => member.isSharing && member.location != null).toList();
     final initialCenter = visibleMembers.firstOrNull?.location ??
-        (_currentPosition == null ? const LatLng(37.7749, -122.4194) : LatLng(_currentPosition!.latitude, _currentPosition!.longitude));
+        (_currentPosition == null
+            ? const LatLng(37.7749, -122.4194)
+            : LatLng(_currentPosition!.latitude, _currentPosition!.longitude));
 
     return Scaffold(
       appBar: AppBar(
@@ -419,7 +477,7 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
                         FilledButton.icon(
                           onPressed: _isJoining ? null : _connectAndJoin,
                           icon: const Icon(Icons.link),
-                          label: Text(_isConnected ? 'Reconnect' : 'Connect & share'),
+                          label: Text(_isConnected ? 'Reconnect now' : 'Connect & share'),
                         ),
                         if (_isConnected)
                           OutlinedButton.icon(
@@ -453,7 +511,7 @@ class _FamilyLocatorHomePageState extends State<FamilyLocatorHomePage> {
                 borderRadius: BorderRadius.circular(20),
                 child: FlutterMap(
                   mapController: _mapController,
-                  options: MapOptions(initialCenter: initialCenter, initialZoom: 12),
+                  options: MapOptions(initialCenter: initialCenter, initialZoom: 13),
                   children: [
                     TileLayer(
                       urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',

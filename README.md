@@ -19,6 +19,7 @@ The relay keeps room membership and latest locations **in memory only**. If the 
 3. Enter the same relay URL and family code
 4. Each person explicitly taps **Connect & share**
 5. Live locations are forwarded to everyone in that room
+6. If the relay drops, the app automatically retries with backoff
 
 ## Safety model
 
@@ -65,6 +66,20 @@ ws://192.168.1.25:8080
 ```
 
 Both phones and the relay server need to be reachable on the same network unless you deploy the relay publicly.
+
+## Performance notes
+
+This build is tuned for a simple low-latency MVP:
+- location stream uses `LocationAccuracy.best`
+- location updates send after small movement changes
+- WebSocket ping keeps the relay session warm
+- reconnect retries use capped backoff
+
+Still, no honest mobile app can promise literally zero lag. Real-world accuracy and latency depend on:
+- GPS signal quality
+- battery saver / background restrictions
+- iOS and Android location policies
+- Wi-Fi or cellular network quality
 
 ## Tests
 

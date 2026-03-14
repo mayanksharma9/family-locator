@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 
 const port = Number(process.env.PORT || 8080);
 const rooms = new Map();
+const staleMemberMs = 45_000;
 
 function getRoom(roomCode) {
   if (!rooms.has(roomCode)) {
@@ -28,6 +29,7 @@ function memberSnapshot(member) {
     lng: member.lng,
     accuracy: member.accuracy,
     updatedAt: member.updatedAt,
+    isOnline: Date.now() - member.lastSeenAt < staleMemberMs,
   };
 }
 
@@ -57,6 +59,10 @@ function leaveRoom(member) {
   broadcastRoomState(member.roomCode);
 }
 
+function touchMember(member) {
+  member.lastSeenAt = Date.now();
+}
+
 function handleJoin(member, data) {
   const roomCode = sanitizeRoomCode(data.roomCode);
   const name = String(data.name || '').trim().slice(0, 40);
@@ -71,6 +77,7 @@ function handleJoin(member, data) {
   member.roomCode = roomCode;
   member.name = name;
   member.isSharing = Boolean(data.isSharing ?? true);
+  touchMember(member);
 
   const room = getRoom(roomCode);
   room.clients.set(member.id, member);
@@ -95,6 +102,7 @@ function handleLocation(member, data) {
   member.accuracy = Number(data.accuracy || 0);
   member.updatedAt = new Date().toISOString();
   member.isSharing = Boolean(data.isSharing ?? true);
+  touchMember(member);
 
   broadcastRoomState(member.roomCode);
 }
@@ -107,11 +115,12 @@ function handleSharing(member, data) {
 
   member.isSharing = Boolean(data.isSharing);
   member.updatedAt = new Date().toISOString();
+  touchMember(member);
   broadcastRoomState(member.roomCode);
 }
 
-export function createServer({ listen = true, port: requestedPort } = {}) {
-  const wss = new WebSocketServer({ port: listen ? (requestedPort ?? port) : undefined });
+export function createServer({ port: requestedPort } = {}) {
+  const wss = new WebSocketServer({ port: requestedPort ?? port });
 
   wss.on('connection', (socket) => {
     const member = {
@@ -124,12 +133,14 @@ export function createServer({ listen = true, port: requestedPort } = {}) {
       lng: null,
       accuracy: null,
       updatedAt: null,
+      lastSeenAt: Date.now(),
     };
 
     socket.send(JSON.stringify({ type: 'welcome', message: 'Connected to family locator relay' }));
 
     socket.on('message', (raw) => {
       try {
+        touchMember(member);
         const data = JSON.parse(String(raw));
         switch (data.type) {
           case 'join':
@@ -147,7 +158,7 @@ export function createServer({ listen = true, port: requestedPort } = {}) {
           default:
             socket.send(JSON.stringify({ type: 'error', message: `unknown message type: ${data.type}` }));
         }
-      } catch (error) {
+      } catch {
         socket.send(JSON.stringify({ type: 'error', message: 'invalid json payload' }));
       }
     });

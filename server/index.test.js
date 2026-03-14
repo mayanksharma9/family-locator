@@ -18,7 +18,7 @@ function waitForMessage(socket, matcher) {
 }
 
 test('relay broadcasts room state without persistence', async () => {
-  const server = createServer({ listen: true, port: 0 });
+  const server = createServer({ port: 0 });
   const httpServer = await new Promise((resolve) => {
     server.on('listening', () => resolve(server));
   });
@@ -51,6 +51,7 @@ test('relay broadcasts room state without persistence', async () => {
   assert.equal(state.roomCode, 'HOME123');
   assert.equal(state.members.some((member) => member.name === 'Leo'), true);
   assert.equal(state.members.some((member) => member.name === 'Ava'), true);
+  assert.equal(state.members.every((member) => typeof member.isOnline === 'boolean'), true);
 
   a.close();
   b.close();
