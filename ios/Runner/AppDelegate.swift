@@ -1,5 +1,6 @@
 import Flutter
 import UIKit
+import background_locator_2
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
@@ -12,5 +13,6 @@ import UIKit
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+    BackgroundLocatorPlugin.setPluginRegistrantCallback(GeneratedPluginRegistrant.register(with:))
   }
 }

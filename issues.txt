@@ -1,0 +1,17 @@
+﻿Analyzing family-locator...                                     
+
+   info - Don't invoke 'print' in production code - lib\location_service.dart:26:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\location_service.dart:31:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\location_service.dart:38:5 - avoid_print
+   info - Don't invoke 'print' in production code - lib\location_service.dart:64:9 - avoid_print
+  error - 'AndroidSettings' isn't a function - lib\main.dart:311:14 - invocation_of_non_function
+  error - The name 'AndroidSettings' is defined in the libraries 'package:background_locator_2/settings/android_settings.dart' and 'package:geolocator_android/src/types/android_settings.dart (via package:geolocator/geolocator.dart)' - lib\main.dart:311:14 - ambiguous_import
+  error - The name 'LocationAccuracy' is defined in the libraries 'package:background_locator_2/settings/locator_settings.dart' and 'package:geolocator_platform_interface/src/enums/location_accuracy.dart (via package:geolocator/geolocator.dart)' - lib\main.dart:312:19 - ambiguous_import
+  error - The name 'LocationAccuracy' is defined in the libraries 'package:background_locator_2/settings/locator_settings.dart' and 'package:geolocator_platform_interface/src/enums/location_accuracy.dart (via package:geolocator/geolocator.dart)' - lib\main.dart:324:19 - ambiguous_import
+  error - Invalid constant value - lib\main.dart:332:17 - invalid_constant
+  error - The name 'LocationAccuracy' is defined in the libraries 'package:background_locator_2/settings/locator_settings.dart' and 'package:geolocator_platform_interface/src/enums/location_accuracy.dart (via package:geolocator/geolocator.dart)' - lib\main.dart:332:17 - ambiguous_import
+  error - Invalid constant value - lib\main.dart:362:19 - invalid_constant
+  error - The name 'LocationAccuracy' is defined in the libraries 'package:background_locator_2/settings/locator_settings.dart' and 'package:geolocator_platform_interface/src/enums/location_accuracy.dart (via package:geolocator/geolocator.dart)' - lib\main.dart:362:19 - ambiguous_import
+  error - The name 'AndroidSettings' is defined in the libraries 'package:background_locator_2/settings/android_settings.dart' and 'package:geolocator_android/src/types/android_settings.dart (via package:geolocator/geolocator.dart)' - lib\main.dart:367:30 - ambiguous_import
+  error - The name 'LocationAccuracy' is defined in the libraries 'package:background_locator_2/settings/locator_settings.dart' and 'package:geolocator_platform_interface/src/enums/location_accuracy.dart (via package:geolocator/geolocator.dart)' - lib\main.dart:368:19 - ambiguous_import
+
